@@ -136,6 +136,60 @@ function normalizeSchema(schema) {
   return normalized;
 }
 
+function canonicalize(value, parentKey = '') {
+  if (Array.isArray(value)) {
+    const items = value.map(item => canonicalize(item));
+    return parentKey === 'required' || parentKey === 'enum'
+      ? items.sort((first, second) =>
+          JSON.stringify(first).localeCompare(JSON.stringify(second))
+        )
+      : items;
+  }
+
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.keys(value)
+        .sort()
+        .map(key => [key, canonicalize(value[key], key)])
+    );
+  }
+
+  return value;
+}
+
+function getVapiPatchValues(vapiTool) {
+  return {
+    description:
+      typeof vapiTool?.function?.description === 'string' &&
+      vapiTool.function.description.trim()
+        ? vapiTool.function.description.trim()
+        : '-',
+    url: typeof vapiTool?.url === 'string' ? vapiTool.url.trim() : '',
+    body_parameters: normalizeSchema(vapiTool?.body),
+  };
+}
+
+function isSemanticallyDifferent(vapiTool, telnyxTool) {
+  const toolDefinition = telnyxTool?.tool_definition;
+  if (!toolDefinition || typeof toolDefinition !== 'object') return true;
+
+  const desired = getVapiPatchValues(vapiTool);
+  const currentDescription =
+    typeof toolDefinition.description === 'string'
+      ? toolDefinition.description.trim()
+      : '';
+  const currentUrl =
+    typeof toolDefinition.url === 'string' ? toolDefinition.url.trim() : '';
+  const currentBodyParameters = normalizeSchema(toolDefinition.body_parameters);
+
+  return (
+    currentDescription !== desired.description ||
+    currentUrl !== desired.url ||
+    JSON.stringify(canonicalize(currentBodyParameters)) !==
+      JSON.stringify(canonicalize(desired.body_parameters))
+  );
+}
+
 function vapiToolToTelnyxPayload(tool) {
   const name = tool?.name;
   if (typeof name !== 'string' || !name) {
@@ -145,21 +199,17 @@ function vapiToolToTelnyxPayload(tool) {
     throw new Error(`Vapi tool "${name}" URL is missing`);
   }
 
-  const description =
-    typeof tool?.function?.description === 'string' &&
-    tool.function.description.trim()
-      ? tool.function.description.trim()
-      : '-';
+  const patchValues = getVapiPatchValues(tool);
 
   return {
     type: 'webhook',
     display_name: name,
     webhook: {
       name,
-      description,
+      description: patchValues.description,
       url: tool.url,
       method: (tool.method || 'POST').toUpperCase(),
-      body_parameters: normalizeSchema(tool.body),
+      body_parameters: patchValues.body_parameters,
       headers: [],
       async: tool.async === true,
     },
@@ -203,13 +253,10 @@ function vapiToolToTelnyxPatchPayload(vapiTool, telnyxTool) {
     body_parameters: structuredClone(toolDefinition.body_parameters),
   };
 
-  webhook.description =
-    typeof vapiTool?.function?.description === 'string' &&
-    vapiTool.function.description.trim()
-      ? vapiTool.function.description.trim()
-      : '-';
-  webhook.url = vapiTool.url;
-  webhook.body_parameters = normalizeSchema(vapiTool.body);
+  const patchValues = getVapiPatchValues(vapiTool);
+  webhook.description = patchValues.description;
+  webhook.url = patchValues.url;
+  webhook.body_parameters = patchValues.body_parameters;
 
   return { webhook };
 }
@@ -292,12 +339,18 @@ async function importTools() {
     }
   });
 
-  const toolsToUpdate = targetVapiTools
+  const existingWebhookTools = targetVapiTools
     .map(vapiTool => ({
       vapiTool,
       telnyxTool: telnyxToolsByDefinitionName.get(vapiTool.name),
     }))
     .filter(pair => pair.telnyxTool?.type === 'webhook');
+  const toolsToUpdate = existingWebhookTools.filter(({ vapiTool, telnyxTool }) =>
+    isSemanticallyDifferent(vapiTool, telnyxTool)
+  );
+  const unchangedTools = existingWebhookTools.filter(
+    ({ vapiTool, telnyxTool }) => !isSemanticallyDifferent(vapiTool, telnyxTool)
+  );
   const conflictingTools = targetVapiTools
     .map(vapiTool => ({
       vapiTool,
@@ -316,6 +369,12 @@ async function importTools() {
   toolsToUpdate.forEach(({ vapiTool, telnyxTool }) =>
     console.log(`- UPDATE ${vapiTool.name} (${telnyxTool.id})`)
   );
+  console.log(
+    `Semantically same (no need to update) Telnyx webhook tools: ${unchangedTools.length}`
+  );
+  unchangedTools.forEach(({ vapiTool, telnyxTool }) =>
+    console.log(`- SAME ${vapiTool.name} (${telnyxTool.id})`)
+  );
   console.log(`Missing Telnyx webhook tools to create: ${toolsToCreate.length}`);
   toolsToCreate.forEach(tool => console.log(`- CREATE ${tool.name}`));
   console.log(`Same-name non-webhook Telnyx conflicts: ${conflictingTools.length}`);
@@ -331,6 +390,7 @@ async function importTools() {
       toolNamePrefix,
       targetVapiTools,
       toolsToUpdate,
+      unchangedTools,
       toolsToCreate,
       conflictingTools,
       createdTools: [],
@@ -346,6 +406,7 @@ async function importTools() {
       toolNamePrefix,
       targetVapiTools,
       toolsToUpdate,
+      unchangedTools,
       toolsToCreate,
       conflictingTools,
       createdTools: [],
@@ -389,6 +450,9 @@ async function importTools() {
   console.log('\nImport summary');
   console.log(`Target Vapi tools: ${targetVapiTools.length}`);
   console.log(`Telnyx webhook tools updated: ${updatedTools.length}`);
+  console.log(
+    `Semantically same (no need to update) webhook tools: ${unchangedTools.length}`
+  );
   console.log(`Telnyx tools created: ${createdTools.length}`);
   console.log(`Same-name non-webhook conflicts skipped: ${conflictingTools.length}`);
   console.log(`Failed operations: ${failedTools.length}`);
@@ -397,6 +461,7 @@ async function importTools() {
     toolNamePrefix,
     targetVapiTools,
     toolsToUpdate,
+    unchangedTools,
     toolsToCreate,
     conflictingTools,
     createdTools,
@@ -417,6 +482,7 @@ module.exports = {
   fetchTelnyxTools,
   fetchVapiTools,
   importTools,
+  isSemanticallyDifferent,
   normalizeSchema,
   updateTelnyxTool,
   vapiToolToTelnyxPatchPayload,
