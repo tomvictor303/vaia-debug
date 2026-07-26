@@ -325,6 +325,7 @@ async function importTools() {
         tool.name.startsWith(toolNamePrefix)
     )
     .sort((first, second) => first.name.localeCompare(second.name));
+  const targetVapiToolNames = new Set(targetVapiTools.map(tool => tool.name));
 
   const telnyxToolsByDefinitionName = new Map();
   telnyxTools.forEach(tool => {
@@ -338,6 +339,19 @@ async function importTools() {
       telnyxToolsByDefinitionName.set(name, tool);
     }
   });
+  const telnyxOnlyWebhookTools = telnyxTools
+    .filter(tool => {
+      const name = tool?.tool_definition?.name;
+      return (
+        tool?.type === 'webhook' &&
+        typeof name === 'string' &&
+        name.startsWith(toolNamePrefix) &&
+        !targetVapiToolNames.has(name)
+      );
+    })
+    .sort((first, second) =>
+      first.tool_definition.name.localeCompare(second.tool_definition.name)
+    );
 
   const existingWebhookTools = targetVapiTools
     .map(vapiTool => ({
@@ -383,6 +397,12 @@ async function importTools() {
       `- CONFLICT ${vapiTool.name} (${telnyxTool.type || 'unknown type'}, ${telnyxTool.id})`
     )
   );
+  console.log(
+    `Telnyx-only webhook tools matching "${toolNamePrefix}": ${telnyxOnlyWebhookTools.length}`
+  );
+  telnyxOnlyWebhookTools.forEach(tool =>
+    console.log(`- TELNYX ONLY ${tool.tool_definition.name} (${tool.id})`)
+  );
 
   if (toolsToCreate.length === 0 && toolsToUpdate.length === 0) {
     console.log('\nNo webhook tools to create or update.');
@@ -393,6 +413,7 @@ async function importTools() {
       unchangedTools,
       toolsToCreate,
       conflictingTools,
+      telnyxOnlyWebhookTools,
       createdTools: [],
       updatedTools: [],
       failedTools: [],
@@ -409,6 +430,7 @@ async function importTools() {
       unchangedTools,
       toolsToCreate,
       conflictingTools,
+      telnyxOnlyWebhookTools,
       createdTools: [],
       updatedTools: [],
       failedTools: [],
@@ -455,6 +477,7 @@ async function importTools() {
   );
   console.log(`Telnyx webhook tools created: ${createdTools.length}`);
   console.log(`Same-name non-webhook conflicts skipped: ${conflictingTools.length}`);
+  console.log(`Telnyx-only webhook tools: ${telnyxOnlyWebhookTools.length}`);
   console.log(`Failed operations: ${failedTools.length}`);
 
   return {
@@ -464,6 +487,7 @@ async function importTools() {
     unchangedTools,
     toolsToCreate,
     conflictingTools,
+    telnyxOnlyWebhookTools,
     createdTools,
     updatedTools,
     failedTools,
