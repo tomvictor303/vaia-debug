@@ -453,7 +453,7 @@ async function importTools() {
   console.log(
     `Semantically same (no need to update) webhook tools: ${unchangedTools.length}`
   );
-  console.log(`Telnyx tools created: ${createdTools.length}`);
+  console.log(`Telnyx webhook tools created: ${createdTools.length}`);
   console.log(`Same-name non-webhook conflicts skipped: ${conflictingTools.length}`);
   console.log(`Failed operations: ${failedTools.length}`);
 
