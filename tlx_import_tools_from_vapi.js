@@ -9,7 +9,6 @@ const TELNYX_TOOLS_URL = 'https://api.telnyx.com/v2/ai/tools';
 const vapiApiKey = process.env.VAPI_API_KEY?.trim();
 const telnyxApiKey = (
   process.env.TELNYX_API_KEY ||
-  process.env.Telnyx_API_KEY ||
   ''
 ).trim();
 
