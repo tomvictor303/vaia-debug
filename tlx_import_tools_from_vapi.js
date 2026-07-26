@@ -23,8 +23,8 @@ async function ask(question) {
 
 async function promptForToolNamePrefix() {
   const prefix = await ask('Vapi API request tool name prefix to import: ');
-  if (prefix.length <= 2) {
-    throw new Error('Guardrail failed: prefix must be more than 2 characters');
+  if (prefix.length <= 3) {
+    throw new Error('Guardrail failed: prefix must be more than 3 characters');
   }
   return prefix;
 }
