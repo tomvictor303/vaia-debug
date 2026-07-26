@@ -398,7 +398,8 @@ async function importTools() {
     )
   );
   console.log(
-    `Telnyx-only webhook tools matching "${toolNamePrefix}": ${telnyxOnlyWebhookTools.length}`
+    `Telnyx-only (exists only at Telnyx, not at Vapi) webhook tools matching ` +
+    `"${toolNamePrefix}": ${telnyxOnlyWebhookTools.length}`
   );
   telnyxOnlyWebhookTools.forEach(tool =>
     console.log(`- TELNYX ONLY ${tool.tool_definition.name} (${tool.id})`)
@@ -477,7 +478,10 @@ async function importTools() {
   );
   console.log(`Telnyx webhook tools created: ${createdTools.length}`);
   console.log(`Same-name non-webhook conflicts skipped: ${conflictingTools.length}`);
-  console.log(`Telnyx-only webhook tools: ${telnyxOnlyWebhookTools.length}`);
+  console.log(
+    `Telnyx-only (exists only at Telnyx, not at Vapi) webhook tools: ` +
+    telnyxOnlyWebhookTools.length
+  );
   console.log(`Failed operations: ${failedTools.length}`);
 
   return {
