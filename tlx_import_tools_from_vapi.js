@@ -1,0 +1,307 @@
+require('dotenv').config();
+
+const readline = require('node:readline/promises');
+const { stdin: input, stdout: output } = require('node:process');
+
+const VAPI_TOOLS_URL = 'https://api.vapi.ai/tool?limit=1000';
+const TELNYX_TOOLS_URL = 'https://api.telnyx.com/v2/ai/tools';
+
+const vapiApiKey = process.env.VAPI_API_KEY?.trim();
+const telnyxApiKey = (
+  process.env.TELNYX_API_KEY ||
+  process.env.Telnyx_API_KEY ||
+  ''
+).trim();
+
+async function ask(question) {
+  const rl = readline.createInterface({ input, output });
+  try {
+    return (await rl.question(question)).trim();
+  } finally {
+    rl.close();
+  }
+}
+
+async function promptForToolNamePrefix() {
+  const prefix = await ask('Vapi API request tool name prefix to import: ');
+  if (prefix.length <= 2) {
+    throw new Error('Guardrail failed: prefix must be more than 2 characters');
+  }
+  return prefix;
+}
+
+async function confirmImport(toolCount) {
+  const answer = await ask(
+    `Create ${toolCount} missing webhook tool(s) in Telnyx? Type y/n: `
+  );
+  return answer.toLowerCase() === 'y';
+}
+
+async function readErrorResponse(response) {
+  try {
+    const text = await response.text();
+    return text ? `: ${text}` : '';
+  } catch {
+    return '';
+  }
+}
+
+async function fetchVapiTools() {
+  console.log(`Fetching Vapi tools from: ${VAPI_TOOLS_URL}`);
+  const response = await fetch(VAPI_TOOLS_URL, {
+    method: 'GET',
+    headers: {
+      Accept: 'application/json',
+      Authorization: `Bearer ${vapiApiKey}`,
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(
+      `Vapi tools request failed (${response.status} ${response.statusText})` +
+      await readErrorResponse(response)
+    );
+  }
+
+  const tools = await response.json();
+  if (!Array.isArray(tools)) {
+    throw new Error('Unexpected Vapi response: expected an array of tools');
+  }
+  return tools;
+}
+
+async function fetchTelnyxTools() {
+  console.log(`Fetching Telnyx tools from: ${TELNYX_TOOLS_URL}`);
+  const response = await fetch(TELNYX_TOOLS_URL, {
+    method: 'GET',
+    headers: {
+      Accept: 'application/json',
+      Authorization: `Bearer ${telnyxApiKey}`,
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(
+      `Telnyx tools request failed (${response.status} ${response.statusText})` +
+      await readErrorResponse(response)
+    );
+  }
+
+  const responseBody = await response.json();
+  if (!Array.isArray(responseBody?.data)) {
+    throw new Error('Unexpected Telnyx response: expected response.data to be an array');
+  }
+  return responseBody.data;
+}
+
+function normalizeSchema(schema) {
+  if (!schema || typeof schema !== 'object' || Array.isArray(schema)) {
+    return {
+      type: 'object',
+      properties: {},
+      additionalProperties: false,
+    };
+  }
+
+  const normalized = {};
+
+  if (typeof schema.type === 'string') normalized.type = schema.type;
+  if (typeof schema.description === 'string' && schema.description.trim()) {
+    normalized.description = schema.description;
+  }
+  if (Array.isArray(schema.enum)) normalized.enum = structuredClone(schema.enum);
+
+  if (schema.items && typeof schema.items === 'object') {
+    normalized.items = normalizeSchema(schema.items);
+  }
+
+  if (schema.properties && typeof schema.properties === 'object') {
+    normalized.properties = Object.fromEntries(
+      Object.entries(schema.properties).map(([name, propertySchema]) => [
+        name,
+        normalizeSchema(propertySchema),
+      ])
+    );
+  } else if (schema.type === 'object') {
+    normalized.properties = {};
+  }
+
+  if (Array.isArray(schema.required) && schema.required.length > 0) {
+    normalized.required = [...schema.required];
+  }
+
+  if (schema.type === 'object' || normalized.properties) {
+    normalized.additionalProperties = false;
+  }
+
+  return normalized;
+}
+
+function vapiToolToTelnyxPayload(tool) {
+  const name = tool?.name;
+  if (typeof name !== 'string' || !name) {
+    throw new Error('Vapi tool name is missing');
+  }
+  if (typeof tool.url !== 'string' || !tool.url) {
+    throw new Error(`Vapi tool "${name}" URL is missing`);
+  }
+
+  const description =
+    typeof tool?.function?.description === 'string' &&
+    tool.function.description.trim()
+      ? tool.function.description.trim()
+      : '-';
+
+  return {
+    type: 'webhook',
+    display_name: name,
+    webhook: {
+      name,
+      description,
+      url: tool.url,
+      method: (tool.method || 'POST').toUpperCase(),
+      body_parameters: normalizeSchema(tool.body),
+      headers: [],
+      async: tool.async === true,
+    },
+  };
+}
+
+async function createTelnyxTool(payload) {
+  const response = await fetch(TELNYX_TOOLS_URL, {
+    method: 'POST',
+    headers: {
+      Accept: 'application/json',
+      Authorization: `Bearer ${telnyxApiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    throw new Error(
+      `Telnyx create request failed (${response.status} ${response.statusText})` +
+      await readErrorResponse(response)
+    );
+  }
+
+  return response.json();
+}
+
+async function importTools() {
+  if (!vapiApiKey) {
+    throw new Error('VAPI_API_KEY environment variable is required');
+  }
+  if (!telnyxApiKey) {
+    throw new Error('TELNYX_API_KEY environment variable is required');
+  }
+
+  const toolNamePrefix = await promptForToolNamePrefix();
+  const [vapiTools, telnyxTools] = await Promise.all([
+    fetchVapiTools(),
+    fetchTelnyxTools(),
+  ]);
+
+  const targetVapiTools = vapiTools
+    .filter(
+      tool =>
+        tool?.type === 'apiRequest' &&
+        typeof tool.name === 'string' &&
+        tool.name.startsWith(toolNamePrefix)
+    )
+    .sort((first, second) => first.name.localeCompare(second.name));
+
+  const existingTelnyxWebhookNames = new Set(
+    telnyxTools
+      .filter(tool => tool?.type === 'webhook')
+      .map(tool => tool?.tool_definition?.name)
+      .filter(name => typeof name === 'string' && name)
+  );
+
+  const existingTools = targetVapiTools.filter(tool =>
+    existingTelnyxWebhookNames.has(tool.name)
+  );
+  const toolsToCreate = targetVapiTools.filter(
+    tool => !existingTelnyxWebhookNames.has(tool.name)
+  );
+
+  console.log(`\nVapi tools fetched: ${vapiTools.length}`);
+  console.log(
+    `Vapi apiRequest tools starting with "${toolNamePrefix}": ${targetVapiTools.length}`
+  );
+  console.log(`Existing Telnyx webhook tools skipped: ${existingTools.length}`);
+  existingTools.forEach(tool => console.log(`- SKIP ${tool.name}`));
+  console.log(`Missing Telnyx webhook tools to create: ${toolsToCreate.length}`);
+  toolsToCreate.forEach(tool => console.log(`- CREATE ${tool.name}`));
+
+  if (toolsToCreate.length === 0) {
+    console.log('\nNo missing tools to import.');
+    return {
+      toolNamePrefix,
+      targetVapiTools,
+      existingTools,
+      toolsToCreate,
+      createdTools: [],
+      failedTools: [],
+    };
+  }
+
+  const confirmed = await confirmImport(toolsToCreate.length);
+  if (!confirmed) {
+    console.log('Cancelled. No Telnyx tools were created.');
+    return {
+      toolNamePrefix,
+      targetVapiTools,
+      existingTools,
+      toolsToCreate,
+      createdTools: [],
+      failedTools: [],
+    };
+  }
+
+  const createdTools = [];
+  const failedTools = [];
+
+  for (const tool of toolsToCreate) {
+    try {
+      const payload = vapiToolToTelnyxPayload(tool);
+      const createdTool = await createTelnyxTool(payload);
+      createdTools.push({ sourceTool: tool, createdTool });
+      console.log(`Created ${tool.name}`);
+    } catch (error) {
+      failedTools.push({ tool, error: error.message });
+      console.error(`Failed ${tool.name}: ${error.message}`);
+    }
+  }
+
+  console.log('\nImport summary');
+  console.log(`Target Vapi tools: ${targetVapiTools.length}`);
+  console.log(`Existing Telnyx tools skipped: ${existingTools.length}`);
+  console.log(`Telnyx tools created: ${createdTools.length}`);
+  console.log(`Failed imports: ${failedTools.length}`);
+
+  return {
+    toolNamePrefix,
+    targetVapiTools,
+    existingTools,
+    toolsToCreate,
+    createdTools,
+    failedTools,
+  };
+}
+
+if (require.main === module) {
+  importTools().catch(error => {
+    console.error('Error:', error.message);
+    process.exitCode = 1;
+  });
+}
+
+module.exports = {
+  createTelnyxTool,
+  fetchTelnyxTools,
+  fetchVapiTools,
+  importTools,
+  normalizeSchema,
+  vapiToolToTelnyxPayload,
+};
