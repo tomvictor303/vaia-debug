@@ -211,7 +211,8 @@ function vapiToolToTelnyxPayload(tool) {
       method: (tool.method || 'POST').toUpperCase(),
       body_parameters: patchValues.body_parameters,
       headers: [],
-      async: tool.async === true,
+      // async: tool.async === true,
+      async: false, // We do not accept asynchronized webhook
     },
   };
 }
