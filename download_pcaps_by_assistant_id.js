@@ -8,8 +8,9 @@ const { stdin: input, stdout: output } = require('node:process');
 
 const API_URL = 'https://api.vapi.ai/call';
 const CALL_PAGE_LIMIT = 300;
-const MAX_PAGE_COUNT = 10;
-const PAGINATION_DELAY_MS = 1000;
+const API_REQUEST_DELAY_MS = 1000;
+const DAY_MS = 24 * 60 * 60 * 1000;
+const MAX_SCAN_DAYS = 20;
 const SUCCESS_ENDED_REASON = 'assistant-forwarded-call';
 const FAILED_ENDED_REASON = 'call.in-progress.error-transfer-failed';
 const TARGET_ENDED_REASONS = [SUCCESS_ENDED_REASON, FAILED_ENDED_REASON];
@@ -20,37 +21,40 @@ function delay(milliseconds) {
   return new Promise(resolve => setTimeout(resolve, milliseconds));
 }
 
-async function promptForOptions() {
+function requireAssistantId() {
+  const assistantId = process.env.PCAPS_OF_ASSISTANT_ID?.trim();
+  if (!assistantId) {
+    throw new Error('PCAPS_OF_ASSISTANT_ID environment variable is required');
+  }
+  if (!/^[A-Za-z0-9_-]+$/.test(assistantId)) {
+    throw new Error('PCAPS_OF_ASSISTANT_ID contains invalid characters');
+  }
+
+  return assistantId;
+}
+
+async function promptForCount() {
   const rl = readline.createInterface({ input, output });
 
   try {
-    const assistantId = (await rl.question('Assistant ID: ')).trim();
-    if (!assistantId) {
-      throw new Error('Assistant ID is required');
-    }
-    if (!/^[A-Za-z0-9_-]+$/.test(assistantId)) {
-      throw new Error('Assistant ID contains invalid characters');
-    }
-
     const countText = (await rl.question('How many PCAPs per ended reason? ')).trim();
     const count = Number(countText);
     if (!Number.isSafeInteger(count) || count <= 0) {
       throw new Error('PCAP count must be a positive integer');
     }
 
-    return { assistantId, count };
+    return count;
   } finally {
     rl.close();
   }
 }
 
-async function fetchCallsPage(assistantId, createdAtLt) {
+async function fetchCallWindow(assistantId, windowStart, windowEnd) {
   const url = new URL(API_URL);
   url.searchParams.set('assistantId', assistantId);
   url.searchParams.set('limit', String(CALL_PAGE_LIMIT));
-  if (createdAtLt) {
-    url.searchParams.set('createdAtLt', createdAtLt);
-  }
+  url.searchParams.set('createdAtGe', new Date(windowStart).toISOString());
+  url.searchParams.set('createdAtLe', new Date(windowEnd).toISOString());
 
   const response = await fetch(url, {
     method: 'GET',
@@ -77,8 +81,8 @@ function getCallTimestamp(call) {
 }
 
 function compareCallsNewestFirst(firstCall, secondCall) {
-  return new Date(getCallTimestamp(secondCall)).getTime() -
-    new Date(getCallTimestamp(firstCall)).getTime();
+  return new Date(secondCall.createdAt).getTime() -
+    new Date(firstCall.createdAt).getTime();
 }
 
 async function findTargetCalls(assistantId, count) {
@@ -86,32 +90,29 @@ async function findTargetCalls(assistantId, count) {
     TARGET_ENDED_REASONS.map(endedReason => [endedReason, []])
   );
   const seenCallIds = new Set();
-  let createdAtLt;
-  let pageNumber = 0;
+  let requestCount = 0;
+  let daysScanned = 0;
   let inspectedCallCount = 0;
   let matchingCallsWithoutPcap = 0;
 
-  while (
-    pageNumber < MAX_PAGE_COUNT &&
-    TARGET_ENDED_REASONS.some(
-      endedReason => selectedCalls.get(endedReason).length < count
-    )
-  ) {
-    pageNumber += 1;
-    const calls = await fetchCallsPage(assistantId, createdAtLt);
-    inspectedCallCount += calls.length;
-    console.log(`Fetched page ${pageNumber}: ${calls.length} calls`);
+  function quotasAreFilled() {
+    return TARGET_ENDED_REASONS.every(
+      endedReason => selectedCalls.get(endedReason).length >= count
+    );
+  }
 
-    if (calls.length === 0) {
-      break;
-    }
-
+  function inspectCompleteWindow(calls) {
     calls.sort(compareCallsNewestFirst);
+
     for (const call of calls) {
+      if (quotasAreFilled()) {
+        break;
+      }
       if (!call.id || seenCallIds.has(call.id)) {
         continue;
       }
       seenCallIds.add(call.id);
+      inspectedCallCount += 1;
 
       if (!TARGET_ENDED_REASONS.includes(call.endedReason)) {
         continue;
@@ -126,43 +127,68 @@ async function findTargetCalls(assistantId, count) {
         callsForReason.push(call);
       }
     }
-
-    if (calls.length < CALL_PAGE_LIMIT) {
-      break;
-    }
-    if (pageNumber >= MAX_PAGE_COUNT) {
-      break;
-    }
-
-    const validCreatedTimes = calls
-      .map(call => call.createdAt)
-      .filter(value => typeof value === 'string' && !Number.isNaN(Date.parse(value)))
-      .sort();
-    const nextCreatedAtLt = validCreatedTimes[0];
-    if (!nextCreatedAtLt || nextCreatedAtLt === createdAtLt) {
-      console.warn('Cannot determine a new pagination boundary; stopping.');
-      break;
-    }
-
-    createdAtLt = nextCreatedAtLt;
-    console.log(`Waiting ${PAGINATION_DELAY_MS} ms before the next page...`);
-    await delay(PAGINATION_DELAY_MS);
   }
 
-  if (
-    pageNumber >= MAX_PAGE_COUNT &&
-    TARGET_ENDED_REASONS.some(
-      endedReason => selectedCalls.get(endedReason).length < count
-    )
-  ) {
-    console.log(`Reached the maximum of ${MAX_PAGE_COUNT} pages; stopping the search.`);
+  async function scanAdaptiveWindow(windowStart, windowEnd) {
+    if (quotasAreFilled()) {
+      return;
+    }
+
+    if (requestCount > 0) {
+      console.log(`Waiting ${API_REQUEST_DELAY_MS} ms before the next API request...`);
+      await delay(API_REQUEST_DELAY_MS);
+    }
+
+    requestCount += 1;
+    const calls = await fetchCallWindow(assistantId, windowStart, windowEnd);
+    console.log(
+      `Request ${requestCount}: ${calls.length} calls from ` +
+      `${new Date(windowStart).toISOString()} through ${new Date(windowEnd).toISOString()}`
+    );
+
+    if (calls.length < CALL_PAGE_LIMIT) {
+      inspectCompleteWindow(calls);
+      return;
+    }
+
+    if (windowStart >= windowEnd) {
+      throw new Error(
+        `A one-millisecond window at ${new Date(windowStart).toISOString()} ` +
+        `reached the ${CALL_PAGE_LIMIT}-call limit; recency cannot be guaranteed`
+      );
+    }
+
+    const midpoint = Math.floor((windowStart + windowEnd) / 2);
+    console.log('Window reached the 300-call limit; splitting it into newer and older halves.');
+
+    // Scan the newer half first. Only inspect the older half if quotas remain open.
+    await scanAdaptiveWindow(midpoint + 1, windowEnd);
+    await scanAdaptiveWindow(windowStart, midpoint);
+  }
+
+  const scanEnd = Date.now();
+  for (let dayIndex = 0; dayIndex < MAX_SCAN_DAYS; dayIndex += 1) {
+    if (quotasAreFilled()) {
+      break;
+    }
+
+    const dayEnd = scanEnd - dayIndex * DAY_MS;
+    const dayStart = dayEnd - DAY_MS + 1;
+    daysScanned += 1;
+    console.log(`\nScanning day ${daysScanned} of ${MAX_SCAN_DAYS}...`);
+    await scanAdaptiveWindow(dayStart, dayEnd);
+  }
+
+  if (!quotasAreFilled()) {
+    console.log(`Reached the ${MAX_SCAN_DAYS}-day scan limit before both quotas were filled.`);
   }
 
   return {
     selectedCalls,
     inspectedCallCount,
     matchingCallsWithoutPcap,
-    pageCount: pageNumber,
+    requestCount,
+    daysScanned,
   };
 }
 
@@ -230,10 +256,14 @@ async function main() {
     throw new Error('VAPI_API_KEY environment variable is required');
   }
 
-  const { assistantId, count } = await promptForOptions();
+  const assistantId = requireAssistantId();
+  const count = await promptForCount();
   const result = await findTargetCalls(assistantId, count);
 
-  console.log(`\nInspected ${result.inspectedCallCount} calls across ${result.pageCount} pages.`);
+  console.log(
+    `\nInspected ${result.inspectedCallCount} calls across ` +
+    `${result.daysScanned} days and ${result.requestCount} API requests.`
+  );
   if (result.matchingCallsWithoutPcap > 0) {
     console.log(`Matching calls without a PCAP URL: ${result.matchingCallsWithoutPcap}`);
   }
