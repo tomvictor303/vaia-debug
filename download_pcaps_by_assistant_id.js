@@ -108,7 +108,7 @@ async function findTargetCalls(assistantId, daysToScan) {
       if (!TARGET_ENDED_REASONS.includes(call.endedReason)) {
         continue;
       }
-      if (typeof call.pcapUrl !== 'string' || !call.pcapUrl.trim()) {
+      if (typeof call.artifact?.pcapUrl !== 'string' || !call.artifact.pcapUrl.trim()) {
         matchingCallsWithoutPcap += 1;
         continue;
       }
@@ -208,7 +208,7 @@ async function downloadPcap(call, assistantId) {
     }
   }
 
-  const response = await fetch(call.pcapUrl);
+  const response = await fetch(call.artifact.pcapUrl);
   if (!response.ok || !response.body) {
     throw new Error(`PCAP download failed. HTTP status: ${response.status}`);
   }
