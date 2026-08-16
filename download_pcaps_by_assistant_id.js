@@ -8,6 +8,7 @@ const { stdin: input, stdout: output } = require('node:process');
 
 const API_URL = 'https://api.vapi.ai/call';
 const CALL_PAGE_LIMIT = 300;
+const MAX_PAGE_COUNT = 10;
 const PAGINATION_DELAY_MS = 1000;
 const SUCCESS_ENDED_REASON = 'assistant-forwarded-call';
 const FAILED_ENDED_REASON = 'call.in-progress.error-transfer-failed';
@@ -91,6 +92,7 @@ async function findTargetCalls(assistantId, count) {
   let matchingCallsWithoutPcap = 0;
 
   while (
+    pageNumber < MAX_PAGE_COUNT &&
     TARGET_ENDED_REASONS.some(
       endedReason => selectedCalls.get(endedReason).length < count
     )
@@ -128,6 +130,9 @@ async function findTargetCalls(assistantId, count) {
     if (calls.length < CALL_PAGE_LIMIT) {
       break;
     }
+    if (pageNumber >= MAX_PAGE_COUNT) {
+      break;
+    }
 
     const validCreatedTimes = calls
       .map(call => call.createdAt)
@@ -142,6 +147,15 @@ async function findTargetCalls(assistantId, count) {
     createdAtLt = nextCreatedAtLt;
     console.log(`Waiting ${PAGINATION_DELAY_MS} ms before the next page...`);
     await delay(PAGINATION_DELAY_MS);
+  }
+
+  if (
+    pageNumber >= MAX_PAGE_COUNT &&
+    TARGET_ENDED_REASONS.some(
+      endedReason => selectedCalls.get(endedReason).length < count
+    )
+  ) {
+    console.log(`Reached the maximum of ${MAX_PAGE_COUNT} pages; stopping the search.`);
   }
 
   return {
