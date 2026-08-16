@@ -57,11 +57,40 @@ function extractReferToTargets(buffer) {
   return targets;
 }
 
+function extractSipUri(headerValue) {
+  const match = headerValue.match(/sips?:([^;>\s]+)/i);
+  return match ? match[1] : headerValue.trim();
+}
+
+function extractFirstReferFromToPair(buffer) {
+  const content = buffer.toString('latin1');
+  const referPacketMatch = content.match(
+    /REFER[ \t]+[^\r\n]+[ \t]+SIP\/2\.0\r?\n([\s\S]*?)\r?\n\r?\n/i
+  );
+  if (!referPacketMatch) {
+    return null;
+  }
+
+  const headers = referPacketMatch[1];
+  const fromMatch = headers.match(/^From\s*:\s*(.+)$/im);
+  const toMatch = headers.match(/^To\s*:\s*(.+)$/im);
+  if (!fromMatch || !toMatch) {
+    return null;
+  }
+
+  return {
+    from: extractSipUri(fromMatch[1]),
+    to: extractSipUri(toMatch[1]),
+  };
+}
+
 async function debugEndedReason(assistantId, endedReason) {
   const directoryPath = path.join(__dirname, 'pcap', assistantId, endedReason);
   const pcapFiles = await findPcapFiles(directoryPath);
   const uniqueTargets = new Set();
+  const fromToPairs = new Map();
   let filesWithReferTo = 0;
+  let filesWithFirstReferPair = 0;
 
   for (const pcapFile of pcapFiles) {
     const buffer = await fs.readFile(pcapFile);
@@ -70,6 +99,18 @@ async function debugEndedReason(assistantId, endedReason) {
       filesWithReferTo += 1;
     }
     targets.forEach(target => uniqueTargets.add(target));
+
+    const pair = extractFirstReferFromToPair(buffer);
+    if (pair) {
+      filesWithFirstReferPair += 1;
+      const pairKey = `${pair.from}\t${pair.to}`;
+      const existingPair = fromToPairs.get(pairKey);
+      if (existingPair) {
+        existingPair.fileCount += 1;
+      } else {
+        fromToPairs.set(pairKey, { ...pair, fileCount: 1 });
+      }
+    }
   }
 
   const sortedTargets = [...uniqueTargets].sort((firstTarget, secondTarget) =>
@@ -84,7 +125,18 @@ async function debugEndedReason(assistantId, endedReason) {
     console.log(`- ${target}`);
   });
 
-  return sortedTargets;
+  const sortedPairs = [...fromToPairs.values()].sort((firstPair, secondPair) =>
+    firstPair.from.localeCompare(secondPair.from, undefined, { numeric: true }) ||
+    firstPair.to.localeCompare(secondPair.to, undefined, { numeric: true })
+  );
+
+  console.log(`\nPCAP files with a complete first REFER From-To pair: ${filesWithFirstReferPair}`);
+  console.log(`Unique first REFER From-To pairs for ${endedReason}: ${sortedPairs.length}`);
+  sortedPairs.forEach(pair => {
+    console.log(`- From: ${pair.from} -> To: ${pair.to} (${pair.fileCount} files)`);
+  });
+
+  return { sortedTargets, sortedPairs };
 }
 
 async function main() {
