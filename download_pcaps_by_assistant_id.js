@@ -210,7 +210,13 @@ async function downloadPcap(call, assistantId) {
     }
   }
 
-  const response = await fetch(call.artifact.pcapUrl);
+  const pcapUrl = `https://api.vapi.ai/call/${encodeURIComponent(call.id)}/pcap`;
+  const response = await fetch(pcapUrl, {
+    method: 'GET',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+    },
+  });
   if (!response.ok || !response.body) {
     throw new Error(`PCAP download failed. HTTP status: ${response.status}`);
   }
