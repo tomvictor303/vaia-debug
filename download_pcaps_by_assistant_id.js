@@ -210,7 +210,18 @@ async function downloadPcap(call, assistantId) {
     }
   }
 
-  const response = await fetch(call.artifact.pcapUrl);
+  const pcapUrl = new URL(call.artifact.pcapUrl);
+  if (pcapUrl.protocol !== 'https:' || pcapUrl.hostname !== 'api.vapi.ai') {
+    throw new Error(
+      `Refusing to send Vapi authorization to untrusted PCAP host: ${pcapUrl.hostname}`
+    );
+  }
+
+  const response = await fetch(pcapUrl, {
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+    },
+  });
   if (!response.ok || !response.body) {
     throw new Error(`PCAP download failed. HTTP status: ${response.status}`);
   }
