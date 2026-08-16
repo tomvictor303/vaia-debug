@@ -8,7 +8,7 @@ const { stdin: input, stdout: output } = require('node:process');
 
 const API_URL = 'https://api.vapi.ai/call';
 const CALL_PAGE_LIMIT = 300;
-const API_REQUEST_DELAY_MS = 1000;
+const API_REQUEST_DELAY_MS = 1500;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const MAX_SCAN_DAYS = 20;
 const SUCCESS_ENDED_REASON = 'assistant-forwarded-call';
@@ -33,17 +33,17 @@ function requireAssistantId() {
   return assistantId;
 }
 
-async function promptForCount() {
+async function promptForRecentDays() {
   const rl = readline.createInterface({ input, output });
 
   try {
-    const countText = (await rl.question('How many PCAPs per ended reason? ')).trim();
-    const count = Number(countText);
-    if (!Number.isSafeInteger(count) || count <= 0) {
-      throw new Error('PCAP count must be a positive integer');
+    const daysText = (await rl.question('How many recent days should be scanned? ')).trim();
+    const days = Number(daysText);
+    if (!Number.isSafeInteger(days) || days <= 0 || days > MAX_SCAN_DAYS) {
+      throw new Error(`Recent days must be an integer from 1 through ${MAX_SCAN_DAYS}`);
     }
 
-    return count;
+    return days;
   } finally {
     rl.close();
   }
@@ -85,7 +85,7 @@ function compareCallsNewestFirst(firstCall, secondCall) {
     new Date(firstCall.createdAt).getTime();
 }
 
-async function findTargetCalls(assistantId, count) {
+async function findTargetCalls(assistantId, daysToScan) {
   const selectedCalls = new Map(
     TARGET_ENDED_REASONS.map(endedReason => [endedReason, []])
   );
@@ -95,19 +95,10 @@ async function findTargetCalls(assistantId, count) {
   let inspectedCallCount = 0;
   let matchingCallsWithoutPcap = 0;
 
-  function quotasAreFilled() {
-    return TARGET_ENDED_REASONS.every(
-      endedReason => selectedCalls.get(endedReason).length >= count
-    );
-  }
-
   function inspectCompleteWindow(calls) {
     calls.sort(compareCallsNewestFirst);
 
     for (const call of calls) {
-      if (quotasAreFilled()) {
-        break;
-      }
       if (!call.id || seenCallIds.has(call.id)) {
         continue;
       }
@@ -123,17 +114,11 @@ async function findTargetCalls(assistantId, count) {
       }
 
       const callsForReason = selectedCalls.get(call.endedReason);
-      if (callsForReason.length < count) {
-        callsForReason.push(call);
-      }
+      callsForReason.push(call);
     }
   }
 
   async function scanAdaptiveWindow(windowStart, windowEnd) {
-    if (quotasAreFilled()) {
-      return;
-    }
-
     if (requestCount > 0) {
       console.log(`Waiting ${API_REQUEST_DELAY_MS} ms before the next API request...`);
       await delay(API_REQUEST_DELAY_MS);
@@ -161,26 +146,18 @@ async function findTargetCalls(assistantId, count) {
     const midpoint = Math.floor((windowStart + windowEnd) / 2);
     console.log('Window reached the 300-call limit; splitting it into newer and older halves.');
 
-    // Scan the newer half first. Only inspect the older half if quotas remain open.
+    // Scan the newer half first to preserve recency in the collected results.
     await scanAdaptiveWindow(midpoint + 1, windowEnd);
     await scanAdaptiveWindow(windowStart, midpoint);
   }
 
   const scanEnd = Date.now();
-  for (let dayIndex = 0; dayIndex < MAX_SCAN_DAYS; dayIndex += 1) {
-    if (quotasAreFilled()) {
-      break;
-    }
-
+  for (let dayIndex = 0; dayIndex < daysToScan; dayIndex += 1) {
     const dayEnd = scanEnd - dayIndex * DAY_MS;
     const dayStart = dayEnd - DAY_MS + 1;
     daysScanned += 1;
-    console.log(`\nScanning day ${daysScanned} of ${MAX_SCAN_DAYS}...`);
+    console.log(`\nScanning day ${daysScanned} of ${daysToScan}...`);
     await scanAdaptiveWindow(dayStart, dayEnd);
-  }
-
-  if (!quotasAreFilled()) {
-    console.log(`Reached the ${MAX_SCAN_DAYS}-day scan limit before both quotas were filled.`);
   }
 
   return {
@@ -257,8 +234,8 @@ async function main() {
   }
 
   const assistantId = requireAssistantId();
-  const count = await promptForCount();
-  const result = await findTargetCalls(assistantId, count);
+  const daysToScan = await promptForRecentDays();
+  const result = await findTargetCalls(assistantId, daysToScan);
 
   console.log(
     `\nInspected ${result.inspectedCallCount} calls across ` +
@@ -274,7 +251,7 @@ async function main() {
 
   for (const endedReason of TARGET_ENDED_REASONS) {
     const calls = result.selectedCalls.get(endedReason);
-    console.log(`\n${endedReason}: found ${calls.length} of ${count} requested PCAPs`);
+    console.log(`\n${endedReason}: found ${calls.length} PCAPs`);
 
     for (const call of calls) {
       try {
