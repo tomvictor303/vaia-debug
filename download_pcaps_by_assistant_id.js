@@ -76,10 +76,6 @@ async function fetchCallWindow(assistantId, windowStart, windowEnd) {
   return calls;
 }
 
-function getCallTimestamp(call) {
-  return call.startedAt || call.createdAt;
-}
-
 function compareCallsNewestFirst(firstCall, secondCall) {
   return new Date(secondCall.createdAt).getTime() -
     new Date(firstCall.createdAt).getTime();
@@ -189,7 +185,13 @@ function formatLocalTimestamp(value) {
 }
 
 function createPcapPath(assistantId, call) {
-  const fileName = `${formatLocalTimestamp(getCallTimestamp(call))}_${call.id}.pcap`;
+  const startedAtTimestamp = new Date(call.startedAt).getTime();
+  if (Number.isNaN(startedAtTimestamp)) {
+    throw new Error(`Invalid startedAt for call ${call.id}: ${call.startedAt || '(missing)'}`);
+  }
+
+  const localStartedAt = formatLocalTimestamp(call.startedAt);
+  const fileName = `${startedAtTimestamp}_${localStartedAt}_${call.id}.pcap`;
   return path.join(__dirname, 'pcap', assistantId, call.endedReason, fileName);
 }
 
