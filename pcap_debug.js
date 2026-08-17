@@ -117,7 +117,7 @@ async function debugEndedReason(assistantId, endedReason) {
     firstTarget.localeCompare(secondTarget, undefined, { numeric: true })
   );
 
-  console.log(`\n${endedReason}`);
+  console.log(`Directory "${endedReason}"`);
   console.log(`PCAP files scanned: ${pcapFiles.length}`);
   console.log(`PCAP files containing Refer-To: ${filesWithReferTo}`);
   console.log(`Unique Refer-To categories: ${sortedTargets.length}`);
@@ -143,7 +143,12 @@ async function main() {
   const assistantId = requireAssistantId();
   console.log(`Assistant ID: ${assistantId}`);
 
-  for (const endedReason of ENDED_REASONS) {
+  for (const [index, endedReason] of ENDED_REASONS.entries()) {
+    if (index === 0) {
+      process.stdout.write('\n');
+    } else {
+      process.stdout.write(`\n\n${'='.repeat(60)}\n\n\n`);
+    }
     await debugEndedReason(assistantId, endedReason);
   }
 }
