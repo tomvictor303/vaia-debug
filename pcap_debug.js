@@ -259,7 +259,7 @@ async function debugEndedReason(assistantId, endedReason) {
   const directoryPath = path.join(__dirname, 'pcap', assistantId, endedReason);
   const pcapFiles = await findPcapFiles(directoryPath);
   const uniqueTargets = new Set();
-  const uniqueIpAddresses = new Set();
+  const ipAddressFileCounts = new Map();
   const fromToPairs = new Map();
   let filesWithReferTo = 0;
   let filesWithFirstReferPair = 0;
@@ -271,8 +271,13 @@ async function debugEndedReason(assistantId, endedReason) {
       filesWithReferTo += 1;
     }
     targets.forEach(target => uniqueTargets.add(target));
-    extractTextIpv4Addresses(buffer).forEach(address => uniqueIpAddresses.add(address));
-    extractPacketIpv4Addresses(buffer).forEach(address => uniqueIpAddresses.add(address));
+    const addressesInFile = new Set([
+      ...extractTextIpv4Addresses(buffer),
+      ...extractPacketIpv4Addresses(buffer),
+    ]);
+    addressesInFile.forEach(address => {
+      ipAddressFileCounts.set(address, (ipAddressFileCounts.get(address) || 0) + 1);
+    });
 
     const pair = extractFirstReferFromToPair(buffer);
     if (pair) {
@@ -299,10 +304,17 @@ async function debugEndedReason(assistantId, endedReason) {
     console.log(`- ${target}`);
   });
 
-  const sortedIpAddresses = [...uniqueIpAddresses].sort(compareIpAddresses);
+  const sortedIpAddresses = [...ipAddressFileCounts.keys()].sort(compareIpAddresses);
   console.log(`\nUnique IP addresses for ${endedReason}: ${sortedIpAddresses.length}`);
   sortedIpAddresses.forEach(address => {
-    console.log(`- ${address}`);
+    const fileCount = ipAddressFileCounts.get(address);
+    const percentage = pcapFiles.length === 0
+      ? 0
+      : fileCount / pcapFiles.length * 100;
+    const formattedPercentage = Number.isInteger(percentage)
+      ? percentage.toFixed(0)
+      : percentage.toFixed(1);
+    console.log(`- ${address} [${fileCount}, ${formattedPercentage}%]`);
   });
 
   const sortedPairs = [...fromToPairs.values()].sort((firstPair, secondPair) =>
