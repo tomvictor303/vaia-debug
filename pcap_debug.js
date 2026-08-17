@@ -345,7 +345,15 @@ async function main() {
   }
 }
 
-main().catch(error => {
-  console.error('Error:', error.message);
-  process.exitCode = 1;
-});
+module.exports = {
+  extractPacketIpv4Addresses,
+  extractTextIpv4Addresses,
+  findPcapFiles,
+};
+
+if (require.main === module) {
+  main().catch(error => {
+    console.error('Error:', error.message);
+    process.exitCode = 1;
+  });
+}
