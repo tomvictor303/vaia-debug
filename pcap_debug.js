@@ -65,6 +65,27 @@ function extractSipUri(headerValue) {
   return match ? match[1] : headerValue.trim();
 }
 
+function extractReferToReferredByEntries(buffer) {
+  const content = buffer.toString('latin1');
+  const referPacketPattern =
+    /REFER[ \t]+[^\r\n]+[ \t]+SIP\/2\.0\r?\n([\s\S]*?)\r?\n\r?\n/gi;
+  const entries = [];
+  let packetMatch;
+
+  while ((packetMatch = referPacketPattern.exec(content)) !== null) {
+    const headers = packetMatch[1];
+    const referToMatch = headers.match(/^Refer-To\s*:\s*(.+)$/im);
+    const referredByMatch = headers.match(/^Referred-By\s*:\s*(.+)$/im);
+
+    entries.push({
+      referTo: referToMatch ? extractSipUri(referToMatch[1]) : null,
+      referredBy: referredByMatch ? extractSipUri(referredByMatch[1]) : null,
+    });
+  }
+
+  return entries;
+}
+
 function extractFirstReferFromToPair(buffer) {
   const content = buffer.toString('latin1');
   const referPacketMatch = content.match(
@@ -259,9 +280,13 @@ async function debugEndedReason(assistantId, endedReason) {
   const directoryPath = path.join(__dirname, 'pcap', assistantId, endedReason);
   const pcapFiles = await findPcapFiles(directoryPath);
   const uniqueTargets = new Set();
+  const uniqueReferredByCategories = new Set();
+  const referToReferredByPairs = new Map();
   const ipAddressFileCounts = new Map();
   const fromToPairs = new Map();
   let filesWithReferTo = 0;
+  let filesWithReferredBy = 0;
+  let filesWithReferToReferredByPair = 0;
   let filesWithFirstReferPair = 0;
 
   for (const pcapFile of pcapFiles) {
@@ -271,6 +296,38 @@ async function debugEndedReason(assistantId, endedReason) {
       filesWithReferTo += 1;
     }
     targets.forEach(target => uniqueTargets.add(target));
+
+    const referEntries = extractReferToReferredByEntries(buffer);
+    const referredByCategoriesInFile = new Set(
+      referEntries.map(entry => entry.referredBy).filter(Boolean)
+    );
+    if (referredByCategoriesInFile.size > 0) {
+      filesWithReferredBy += 1;
+    }
+    referredByCategoriesInFile.forEach(category =>
+      uniqueReferredByCategories.add(category)
+    );
+
+    const referPairsInFile = new Map();
+    referEntries.forEach(entry => {
+      if (!entry.referTo || !entry.referredBy) {
+        return;
+      }
+      const pairKey = `${entry.referTo}\t${entry.referredBy}`;
+      referPairsInFile.set(pairKey, entry);
+    });
+    if (referPairsInFile.size > 0) {
+      filesWithReferToReferredByPair += 1;
+    }
+    referPairsInFile.forEach((entry, pairKey) => {
+      const existingPair = referToReferredByPairs.get(pairKey);
+      if (existingPair) {
+        existingPair.fileCount += 1;
+      } else {
+        referToReferredByPairs.set(pairKey, { ...entry, fileCount: 1 });
+      }
+    });
+
     const addressesInFile = new Set([
       ...extractTextIpv4Addresses(buffer),
       ...extractPacketIpv4Addresses(buffer),
@@ -304,6 +361,32 @@ async function debugEndedReason(assistantId, endedReason) {
     console.log(`- ${target}`);
   });
 
+  const sortedReferredByCategories = [...uniqueReferredByCategories].sort(
+    (firstCategory, secondCategory) =>
+      firstCategory.localeCompare(secondCategory, undefined, { numeric: true })
+  );
+  console.log(`\nPCAP files containing Referred-By: ${filesWithReferredBy}`);
+  console.log(`Unique Referred-By categories: ${sortedReferredByCategories.length}`);
+  sortedReferredByCategories.forEach(category => {
+    console.log(`- ${category}`);
+  });
+
+  const sortedReferToReferredByPairs = [...referToReferredByPairs.values()].sort(
+    (firstPair, secondPair) =>
+      firstPair.referTo.localeCompare(secondPair.referTo, undefined, { numeric: true }) ||
+      firstPair.referredBy.localeCompare(secondPair.referredBy, undefined, { numeric: true })
+  );
+  console.log(
+    `\nPCAP files containing Refer-To + Referred-By: ${filesWithReferToReferredByPair}`
+  );
+  console.log(`Unique Refer-To + Referred-By: ${sortedReferToReferredByPairs.length}`);
+  sortedReferToReferredByPairs.forEach(pair => {
+    console.log(
+      `- Refer-To: ${pair.referTo} -> Referred-By: ${pair.referredBy} ` +
+      `(${pair.fileCount} files)`
+    );
+  });
+
   const sortedIpAddresses = [...ipAddressFileCounts.keys()].sort(compareIpAddresses);
   console.log(`\nUnique IP addresses for ${endedReason}: ${sortedIpAddresses.length}`);
   sortedIpAddresses.forEach(address => {
@@ -328,7 +411,13 @@ async function debugEndedReason(assistantId, endedReason) {
     console.log(`- From: ${pair.from} -> To: ${pair.to} (${pair.fileCount} files)`);
   });
 
-  return { sortedTargets, sortedIpAddresses, sortedPairs };
+  return {
+    sortedTargets,
+    sortedReferredByCategories,
+    sortedReferToReferredByPairs,
+    sortedIpAddresses,
+    sortedPairs,
+  };
 }
 
 async function main() {
