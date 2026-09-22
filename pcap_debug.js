@@ -405,8 +405,14 @@ async function debugEndedReason(assistantId, endedReason) {
     firstPair.to.localeCompare(secondPair.to, undefined, { numeric: true })
   );
 
-  console.log(`\nPCAP files with a complete first REFER From-To pair: ${filesWithFirstReferPair}`);
-  console.log(`Unique first REFER From-To pairs for ${endedReason}: ${sortedPairs.length}`);
+  console.log(
+    `\nPCAP files with a complete From-To pair in the first SIP REFER request: ` +
+    `${filesWithFirstReferPair}`
+  );
+  console.log(
+    `Unique From-To pairs from the first SIP REFER request for ${endedReason}: ` +
+    `${sortedPairs.length}`
+  );
   sortedPairs.forEach(pair => {
     console.log(`- From: ${pair.from} -> To: ${pair.to} (${pair.fileCount} files)`);
   });
