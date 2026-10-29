@@ -5,6 +5,9 @@ const { stdin: input, stdout: output } = require('node:process');
 
 const VAPI_TOOLS_URL = 'https://api.vapi.ai/tool?limit=1000';
 const TELNYX_TOOLS_URL = 'https://api.telnyx.com/v2/ai/tools';
+const VAPI_ONLY_TOOL_NAMES = new Set([
+  'stayntouch_reservations_add_with_cc_tool',
+]);
 
 const vapiApiKey = process.env.VAPI_API_KEY?.trim();
 const telnyxApiKey = (
@@ -323,7 +326,17 @@ async function importTools() {
       tool =>
         tool?.type === 'apiRequest' &&
         typeof tool.name === 'string' &&
-        tool.name.startsWith(toolNamePrefix)
+        tool.name.startsWith(toolNamePrefix) &&
+        !VAPI_ONLY_TOOL_NAMES.has(tool.name)
+    )
+    .sort((first, second) => first.name.localeCompare(second.name));
+  const excludedVapiOnlyTools = vapiTools
+    .filter(
+      tool =>
+        tool?.type === 'apiRequest' &&
+        typeof tool.name === 'string' &&
+        tool.name.startsWith(toolNamePrefix) &&
+        VAPI_ONLY_TOOL_NAMES.has(tool.name)
     )
     .sort((first, second) => first.name.localeCompare(second.name));
   const targetVapiToolNames = new Set(targetVapiTools.map(tool => tool.name));
@@ -380,6 +393,8 @@ async function importTools() {
   console.log(
     `Vapi apiRequest tools starting with "${toolNamePrefix}": ${targetVapiTools.length}`
   );
+  console.log(`Vapi-only tools excluded from Telnyx import: ${excludedVapiOnlyTools.length}`);
+  excludedVapiOnlyTools.forEach(tool => console.log(`- VAPI ONLY ${tool.name}`));
   console.log(`Existing Telnyx webhook tools to update: ${toolsToUpdate.length}`);
   toolsToUpdate.forEach(({ vapiTool, telnyxTool }) =>
     console.log(`- UPDATE ${vapiTool.name} (${telnyxTool.id})`)
@@ -411,6 +426,7 @@ async function importTools() {
     return {
       toolNamePrefix,
       targetVapiTools,
+      excludedVapiOnlyTools,
       toolsToUpdate,
       unchangedTools,
       toolsToCreate,
@@ -428,6 +444,7 @@ async function importTools() {
     return {
       toolNamePrefix,
       targetVapiTools,
+      excludedVapiOnlyTools,
       toolsToUpdate,
       unchangedTools,
       toolsToCreate,
@@ -488,6 +505,7 @@ async function importTools() {
   return {
     toolNamePrefix,
     targetVapiTools,
+    excludedVapiOnlyTools,
     toolsToUpdate,
     unchangedTools,
     toolsToCreate,
