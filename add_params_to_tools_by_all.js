@@ -19,7 +19,7 @@ const params_to_add = {
     "default": "{{customer.number}}"
   }
 };
-const required_params = ['vaiaPlatform', 'vaiaCallerPhoneNumber'];
+const required_params = [];
 
 /**
  * Validates destructive-action guardrails before any Vapi tools are fetched or
